@@ -289,7 +289,7 @@ int tree_from_index(ObjectID *id_out)
     // TODO: Implement recursive tree building
     // (See Lab Appendix for logical steps)
     Index index;
-    if (index_load(&index) != 0)
+    if (load_index_local(&index) != 0)
         return -1;
     return build_tree_recursive(&index, "", id_out);
 }
