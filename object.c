@@ -253,9 +253,107 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out)
 {
     // TODO: Implement
-    (void)id;
-    (void)type_out;
-    (void)data_out;
-    (void)len_out;
-    return -1;
+    char path[512];
+    object_path(id, path, sizeof(path));
+
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -1;
+
+    if (fseek(f, 0, SEEK_END) != 0)
+    {
+        fclose(f);
+        return -1;
+    }
+
+    long file_size = ftell(f);
+    if (file_size < 0)
+    {
+        fclose(f);
+        return -1;
+    }
+
+    rewind(f);
+
+    unsigned char *buf = malloc((size_t)file_size);
+    if (!buf)
+    {
+        fclose(f);
+        return -1;
+    }
+
+    if (fread(buf, 1, (size_t)file_size, f) != (size_t)file_size)
+    {
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    ObjectID actual;
+    compute_hash(buf, (size_t)file_size, &actual);
+    if (memcmp(actual.hash, id->hash, HASH_SIZE) != 0)
+    {
+        free(buf);
+        return -1;
+    }
+
+    unsigned char *nul = memchr(buf, '\0', (size_t)file_size);
+    if (!nul)
+    {
+        free(buf);
+        return -1;
+    }
+
+    char type_str[16];
+    size_t declared_len;
+    if (sscanf((char *)buf, "%15s %zu", type_str, &declared_len) != 2)
+    {
+        free(buf);
+        return -1;
+    }
+
+    if (strcmp(type_str, "blob") == 0)
+    {
+        *type_out = OBJ_BLOB;
+    }
+    else if (strcmp(type_str, "tree") == 0)
+    {
+        *type_out = OBJ_TREE;
+    }
+    else if (strcmp(type_str, "commit") == 0)
+    {
+        *type_out = OBJ_COMMIT;
+    }
+    else
+    {
+        free(buf);
+        return -1;
+    }
+
+    size_t header_len = (size_t)(nul - buf) + 1;
+    size_t data_len = (size_t)file_size - header_len;
+
+    if (data_len != declared_len)
+    {
+        free(buf);
+        return -1;
+    }
+
+    void *out = malloc(data_len ? data_len : 1);
+    if (!out)
+    {
+        free(buf);
+        return -1;
+    }
+
+    if (data_len > 0)
+    {
+        memcpy(out, buf + header_len, data_len);
+    }
+
+    *data_out = out;
+    *len_out = data_len;
+    free(buf);
+    return 0;
 }
