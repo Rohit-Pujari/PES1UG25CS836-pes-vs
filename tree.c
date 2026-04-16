@@ -271,8 +271,7 @@ static int build_tree_recursive(const Index *index, const char *prefix, ObjectID
             TreeEntry *te = &tree.entries[tree.count++];
             te->mode = MODE_DIR;
             te->hash = child_id;
-            strncpy(te->name, dirname, sizeof(te->name) - 1);
-            te->name[sizeof(te->name) - 1] = '\0';
+            snprintf(te->name, sizeof(te->name), "%s", dirname);
         }
     }
 
