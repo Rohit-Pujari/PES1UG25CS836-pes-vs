@@ -185,6 +185,105 @@ static int load_index_local(Index *index)
     return 0;
 }
 
+static int build_tree_recursive(const Index *index, const char *prefix, ObjectID *id_out)
+{
+    Tree tree;
+    tree.count = 0;
+
+    size_t prefix_len = strlen(prefix);
+    char seen_dirs[MAX_TREE_ENTRIES][256];
+    int seen_dir_count = 0;
+
+    for (int i = 0; i < index->count; i++)
+    {
+        const IndexEntry *entry = &index->entries[i];
+
+        if (prefix_len > 0)
+        {
+            if (strncmp(entry->path, prefix, prefix_len) != 0)
+                continue;
+            if (entry->path[prefix_len] != '/')
+                continue;
+        }
+
+        const char *rest = entry->path + prefix_len;
+        if (prefix_len > 0)
+            rest++;
+
+        const char *slash = strchr(rest, '/');
+
+        if (!slash)
+        {
+            if (tree.count >= MAX_TREE_ENTRIES)
+                return -1;
+
+            TreeEntry *te = &tree.entries[tree.count++];
+            te->mode = entry->mode;
+            te->hash = entry->hash;
+            strncpy(te->name, rest, sizeof(te->name) - 1);
+            te->name[sizeof(te->name) - 1] = '\0';
+        }
+        else
+        {
+            size_t dir_len = (size_t)(slash - rest);
+            if (dir_len == 0 || dir_len >= sizeof(seen_dirs[0]))
+                return -1;
+
+            char dirname[256];
+            memcpy(dirname, rest, dir_len);
+            dirname[dir_len] = '\0';
+
+            int seen = 0;
+            for (int j = 0; j < seen_dir_count; j++)
+            {
+                if (strcmp(seen_dirs[j], dirname) == 0)
+                {
+                    seen = 1;
+                    break;
+                }
+            }
+            if (seen)
+                continue;
+
+            if (seen_dir_count >= MAX_TREE_ENTRIES || tree.count >= MAX_TREE_ENTRIES)
+                return -1;
+            strcpy(seen_dirs[seen_dir_count++], dirname);
+
+            char child_prefix[512];
+            int n;
+            if (prefix_len == 0)
+            {
+                n = snprintf(child_prefix, sizeof(child_prefix), "%s", dirname);
+            }
+            else
+            {
+                n = snprintf(child_prefix, sizeof(child_prefix), "%s/%s", prefix, dirname);
+            }
+            if (n < 0 || (size_t)n >= sizeof(child_prefix))
+                return -1;
+
+            ObjectID child_id;
+            if (build_tree_recursive(index, child_prefix, &child_id) != 0)
+                return -1;
+
+            TreeEntry *te = &tree.entries[tree.count++];
+            te->mode = MODE_DIR;
+            te->hash = child_id;
+            strncpy(te->name, dirname, sizeof(te->name) - 1);
+            te->name[sizeof(te->name) - 1] = '\0';
+        }
+    }
+
+    void *data;
+    size_t len;
+    if (tree_serialize(&tree, &data, &len) != 0)
+        return -1;
+
+    int rc = object_write(OBJ_TREE, data, len, id_out);
+    free(data);
+    return rc;
+}
+
 int tree_from_index(ObjectID *id_out)
 {
     // TODO: Implement recursive tree building
