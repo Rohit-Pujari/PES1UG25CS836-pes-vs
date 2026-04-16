@@ -19,24 +19,31 @@
 
 // ─── PROVIDED ────────────────────────────────────────────────────────────────
 
-void hash_to_hex(const ObjectID *id, char *hex_out) {
-    for (int i = 0; i < HASH_SIZE; i++) {
+void hash_to_hex(const ObjectID *id, char *hex_out)
+{
+    for (int i = 0; i < HASH_SIZE; i++)
+    {
         sprintf(hex_out + i * 2, "%02x", id->hash[i]);
     }
     hex_out[HASH_HEX_SIZE] = '\0';
 }
 
-int hex_to_hash(const char *hex, ObjectID *id_out) {
-    if (strlen(hex) < HASH_HEX_SIZE) return -1;
-    for (int i = 0; i < HASH_SIZE; i++) {
+int hex_to_hash(const char *hex, ObjectID *id_out)
+{
+    if (strlen(hex) < HASH_HEX_SIZE)
+        return -1;
+    for (int i = 0; i < HASH_SIZE; i++)
+    {
         unsigned int byte;
-        if (sscanf(hex + i * 2, "%2x", &byte) != 1) return -1;
+        if (sscanf(hex + i * 2, "%2x", &byte) != 1)
+            return -1;
         id_out->hash[i] = (uint8_t)byte;
     }
     return 0;
 }
 
-void compute_hash(const void *data, size_t len, ObjectID *id_out) {
+void compute_hash(const void *data, size_t len, ObjectID *id_out)
+{
     unsigned int hash_len;
     EVP_MD_CTX *ctx = EVP_MD_CTX_new();
     EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
@@ -48,13 +55,15 @@ void compute_hash(const void *data, size_t len, ObjectID *id_out) {
 // Get the filesystem path where an object should be stored.
 // Format: .pes/objects/XX/YYYYYYYY...
 // The first 2 hex chars form the shard directory; the rest is the filename.
-void object_path(const ObjectID *id, char *path_out, size_t path_size) {
+void object_path(const ObjectID *id, char *path_out, size_t path_size)
+{
     char hex[HASH_HEX_SIZE + 1];
     hash_to_hex(id, hex);
     snprintf(path_out, path_size, "%s/%.2s/%s", OBJECTS_DIR, hex, hex + 2);
 }
 
-int object_exists(const ObjectID *id) {
+int object_exists(const ObjectID *id)
+{
     char path[512];
     object_path(id, path, sizeof(path));
     return access(path, F_OK) == 0;
@@ -93,10 +102,130 @@ int object_exists(const ObjectID *id) {
 
 //
 // Returns 0 on success, -1 on error.
-int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
+int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out)
+{
     // TODO: Implement
-    (void)type; (void)data; (void)len; (void)id_out;
-    return -1;
+    const char *type_str;
+    switch (type)
+    {
+    case OBJ_BLOB:
+        type_str = "blob";
+        break;
+    case OBJ_TREE:
+        type_str = "tree";
+        break;
+    case OBJ_COMMIT:
+        type_str = "commit";
+        break;
+    default:
+        return -1;
+    }
+
+    char header[64];
+    int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len);
+    if (header_len < 0 || (size_t)header_len + 1 > sizeof(header))
+        return -1;
+    header_len += 1; // include '\0'
+
+    size_t full_len = (size_t)header_len + len;
+    unsigned char *full = malloc(full_len);
+    if (!full)
+        return -1;
+
+    memcpy(full, header, (size_t)header_len);
+    if (len > 0)
+        memcpy(full + header_len, data, len);
+
+    compute_hash(full, full_len, id_out);
+
+    if (object_exists(id_out))
+    {
+        free(full);
+        return 0;
+    }
+
+    char final_path[512];
+    char hex[HASH_HEX_SIZE + 1];
+    char shard_dir[512];
+    char temp_path[512];
+    int n;
+
+    hash_to_hex(id_out, hex);
+
+    n = snprintf(shard_dir, sizeof(shard_dir), "%s/%.2s", OBJECTS_DIR, hex);
+    if (n < 0 || (size_t)n >= sizeof(shard_dir))
+    {
+        free(full);
+        return -1;
+    }
+
+    n = snprintf(final_path, sizeof(final_path), "%s/%.2s/%s", OBJECTS_DIR, hex, hex + 2);
+    if (n < 0 || (size_t)n >= sizeof(final_path))
+    {
+        free(full);
+        return -1;
+    }
+
+    n = snprintf(temp_path, sizeof(temp_path), "%s/%.2s/tmp-%ld", OBJECTS_DIR, hex, (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof(temp_path))
+    {
+        free(full);
+        return -1;
+    }
+    mkdir(shard_dir, 0755);
+
+    int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0)
+    {
+        free(full);
+        return -1;
+    }
+
+    size_t written = 0;
+    while (written < full_len)
+    {
+        ssize_t n = write(fd, full + written, full_len - written);
+        if (n <= 0)
+        {
+            close(fd);
+            unlink(temp_path);
+            free(full);
+            return -1;
+        }
+        written += (size_t)n;
+    }
+
+    if (fsync(fd) != 0)
+    {
+        close(fd);
+        unlink(temp_path);
+        free(full);
+        return -1;
+    }
+
+    if (close(fd) != 0)
+    {
+        unlink(temp_path);
+        free(full);
+        return -1;
+    }
+
+    if (rename(temp_path, final_path) != 0)
+    {
+        unlink(temp_path);
+        free(full);
+        return -1;
+    }
+
+    int dirfd = open(shard_dir, O_RDONLY);
+    if (dirfd >= 0)
+    {
+        fsync(dirfd);
+        close(dirfd);
+    }
+
+    free(full);
+    return 0;
 }
 
 // Read an object from the store.
@@ -121,8 +250,12 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 //
 // The caller is responsible for calling free(*data_out).
 // Returns 0 on success, -1 on error (file not found, corrupt, etc.).
-int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out) {
+int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out)
+{
     // TODO: Implement
-    (void)id; (void)type_out; (void)data_out; (void)len_out;
+    (void)id;
+    (void)type_out;
+    (void)data_out;
+    (void)len_out;
     return -1;
 }
