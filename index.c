@@ -303,16 +303,17 @@ int index_add(Index *index, const char *path)
     if (!f)
         return -1;
 
-    void *data = malloc((size_t)st.st_size ? (size_t)st.st_size : 1);
+    size_t file_size = (size_t)st.st_size;
+    void *data = malloc(file_size ? file_size : 1);
     if (!data)
     {
         fclose(f);
         return -1;
     }
 
-    if (st.st_size > 0)
+    if (file_size > 0)
     {
-        if (fread(data, 1, (size_t)st.st_size, f) != (size_t)st.st_size)
+        if (fread(data, 1, file_size, f) != file_size)
         {
             free(data);
             fclose(f);
@@ -323,14 +324,12 @@ int index_add(Index *index, const char *path)
     fclose(f);
 
     ObjectID id;
-    if (object_write(OBJ_BLOB, data, (size_t)st.st_size, &id) != 0)
+    if (object_write(OBJ_BLOB, data, file_size, &id) != 0)
     {
         free(data);
         return -1;
     }
     free(data);
-
-    uint32_t mode = (st.st_mode & S_IXUSR) ? 0100755 : 0100644;
 
     IndexEntry *entry = index_find(index, path);
     if (!entry)
@@ -340,7 +339,7 @@ int index_add(Index *index, const char *path)
         entry = &index->entries[index->count++];
     }
 
-    entry->mode = mode;
+    entry->mode = (st.st_mode & S_IXUSR) ? 0100755 : 0100644;
     entry->hash = id;
     entry->mtime_sec = (uint64_t)st.st_mtime;
     entry->size = (uint32_t)st.st_size;
