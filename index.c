@@ -225,28 +225,36 @@ int index_save(const Index *index)
 {
     // TODO: Implement atomic index saving
     // (See Lab Appendix for logical steps)
-    Index sorted = *index;
-    qsort(sorted.entries, sorted.count, sizeof(IndexEntry), compare_index_entries);
+    Index *sorted = malloc(sizeof(Index));
+    if (!sorted)
+        return -1;
+
+    *sorted = *index;
+    qsort(sorted->entries, sorted->count, sizeof(IndexEntry), compare_index_entries);
 
     const char *tmp_path = ".pes/index.tmp";
     FILE *f = fopen(tmp_path, "w");
     if (!f)
+    {
+        free(sorted);
         return -1;
+    }
 
-    for (int i = 0; i < sorted.count; i++)
+    for (int i = 0; i < sorted->count; i++)
     {
         char hex[HASH_HEX_SIZE + 1];
-        hash_to_hex(&sorted.entries[i].hash, hex);
+        hash_to_hex(&sorted->entries[i].hash, hex);
 
         if (fprintf(f, "%o %s %llu %u %s\n",
-                    sorted.entries[i].mode,
+                    sorted->entries[i].mode,
                     hex,
-                    (unsigned long long)sorted.entries[i].mtime_sec,
-                    sorted.entries[i].size,
-                    sorted.entries[i].path) < 0)
+                    (unsigned long long)sorted->entries[i].mtime_sec,
+                    sorted->entries[i].size,
+                    sorted->entries[i].path) < 0)
         {
             fclose(f);
             unlink(tmp_path);
+            free(sorted);
             return -1;
         }
     }
@@ -255,6 +263,7 @@ int index_save(const Index *index)
     {
         fclose(f);
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
 
@@ -262,88 +271,90 @@ int index_save(const Index *index)
     {
         fclose(f);
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
 
     if (fclose(f) != 0)
     {
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
 
     if (rename(tmp_path, INDEX_FILE) != 0)
     {
         unlink(tmp_path);
+        free(sorted);
         return -1;
     }
 
+    free(sorted);
     return 0;
-}
-
-// Stage a file for the next commit.
-//
-// HINTS - Useful functions and syscalls:
-//   - fopen, fread, fclose             : reading the target file's contents
-//   - object_write                     : saving the contents as OBJ_BLOB
-//   - stat / lstat                     : getting file metadata (size, mtime, mode)
-//   - index_find                       : checking if the file is already staged
-//
-// Returns 0 on success, -1 on error.
-int index_add(Index *index, const char *path)
-{
-    // TODO: Implement file staging
-    // (See Lab Appendix for logical steps)
-    struct stat st;
-    if (stat(path, &st) != 0)
-        return -1;
-    if (!S_ISREG(st.st_mode))
-        return -1;
-
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return -1;
-
-    size_t file_size = (size_t)st.st_size;
-    void *data = malloc(file_size ? file_size : 1);
-    if (!data)
+    // Stage a file for the next commit.
+    //
+    // HINTS - Useful functions and syscalls:
+    //   - fopen, fread, fclose             : reading the target file's contents
+    //   - object_write                     : saving the contents as OBJ_BLOB
+    //   - stat / lstat                     : getting file metadata (size, mtime, mode)
+    //   - index_find                       : checking if the file is already staged
+    //
+    // Returns 0 on success, -1 on error.
+    int index_add(Index * index, const char *path)
     {
-        fclose(f);
-        return -1;
-    }
+        // TODO: Implement file staging
+        // (See Lab Appendix for logical steps)
+        struct stat st;
+        if (stat(path, &st) != 0)
+            return -1;
+        if (!S_ISREG(st.st_mode))
+            return -1;
 
-    if (file_size > 0)
-    {
-        if (fread(data, 1, file_size, f) != file_size)
+        FILE *f = fopen(path, "rb");
+        if (!f)
+            return -1;
+
+        size_t file_size = (size_t)st.st_size;
+        void *data = malloc(file_size ? file_size : 1);
+        if (!data)
         {
-            free(data);
             fclose(f);
             return -1;
         }
-    }
 
-    fclose(f);
+        if (file_size > 0)
+        {
+            if (fread(data, 1, file_size, f) != file_size)
+            {
+                free(data);
+                fclose(f);
+                return -1;
+            }
+        }
 
-    ObjectID id;
-    if (object_write(OBJ_BLOB, data, file_size, &id) != 0)
-    {
-        free(data);
-        return -1;
-    }
-    free(data);
+        fclose(f);
 
-    IndexEntry *entry = index_find(index, path);
-    if (!entry)
-    {
-        if (index->count >= MAX_INDEX_ENTRIES)
+        ObjectID id;
+        if (object_write(OBJ_BLOB, data, file_size, &id) != 0)
+        {
+            free(data);
             return -1;
-        entry = &index->entries[index->count++];
+        }
+        free(data);
+
+        IndexEntry *entry = index_find(index, path);
+        if (!entry)
+        {
+            if (index->count >= MAX_INDEX_ENTRIES)
+                return -1;
+            entry = &index->entries[index->count++];
+        }
+
+        entry->mode = (st.st_mode & S_IXUSR) ? 0100755 : 0100644;
+        entry->hash = id;
+        entry->mtime_sec = (uint64_t)st.st_mtime;
+        entry->size = (uint32_t)st.st_size;
+        snprintf(entry->path, sizeof(entry->path), "%s", path);
+
+        return index_save(index);
     }
-
-    entry->mode = (st.st_mode & S_IXUSR) ? 0100755 : 0100644;
-    entry->hash = id;
-    entry->mtime_sec = (uint64_t)st.st_mtime;
-    entry->size = (uint32_t)st.st_size;
-    snprintf(entry->path, sizeof(entry->path), "%s", path);
-
-    return index_save(index);
-}
